@@ -1280,6 +1280,47 @@ function migrateDB() {
 
 function nextId(key) { return DB.ids[key]++; }
 
+/* ═══ CASH RECEIVED vs BILL AMOUNT ═══
+   paid_amount = amount that counts toward the bill (never more than the bill),
+   received    = cash the customer actually handed over (change is given back).
+   Old records stored the handed-over cash in paid_amount, so subtract change for them. */
+function salePaid(s) { const p = Number(s.paid_amount)||0; return s.received === undefined ? Math.max(0, p - (Number(s.change)||0)) : p; }
+function saleGiven(s) { return s.received !== undefined ? Number(s.received)||0 : Number(s.paid_amount)||0; }
+
+/* ═══ PER-ITEM DISCOUNT (Rs or %) ═══ */
+function discNet(listPrice, type, val) {
+  listPrice = Number(listPrice)||0; val = Number(val)||0;
+  let d = val <= 0 ? 0 : (type === 'pct' ? listPrice * Math.min(val,100) / 100 : Math.min(val, listPrice));
+  d = Math.round(d*100)/100;
+  return { disc: d, net: Math.max(0, Math.round((listPrice - d)*100)/100) };
+}
+function applyCartDiscount(it, type, val) {
+  if (!it) return;
+  if (it.list_price === undefined) it.list_price = Number(it.price)||0;
+  const r = discNet(it.list_price, type, val);
+  it.price = r.net;
+  if (r.disc > 0) { it.disc_type = type; it.disc_val = Number(val); } else { delete it.disc_type; delete it.disc_val; if (it.list_price === it.price) delete it.list_price; }
+}
+function showItemDiscount(i) {
+  const it = cart[i]; if (!it) return;
+  const lp = it.list_price !== undefined ? it.list_price : it.price;
+  window.__refocusSales = true;
+  openModal('🏷️ Item discount', `<div class="form-grid"><div class="strong" style="font-size:14px">${esc(it.desc).slice(0,70)}</div><div class="muted small">Price: <b>${fmtInt(lp)}</b>${it.type==='accessory'&&it.qty>1?' each × '+it.qty:''}</div><div style="display:grid;grid-template-columns:120px 1fr;gap:10px">${field('Type', `<select id="idc-type" class="ios-input" onchange="idcPreview(${i})"><option value="amt" ${it.disc_type!=='pct'?'selected':''}>Rs off${it.qty>1?' (each)':''}</option><option value="pct" ${it.disc_type==='pct'?'selected':''}>% off</option></select>`)}${field('Discount', `<input id="idc-val" class="ios-input" type="number" step="0.01" min="0" value="${it.disc_val||''}" placeholder="0" oninput="idcPreview(${i})" autofocus>`)}</div><div id="idc-prev" class="center strong" style="min-height:22px"></div>${it.disc_val?`<button type="button" class="ios-pill ghost" onclick="applyCartDiscount(cart[${i}],'amt',0);closeModal();renderCart()">Remove discount</button>`:''}</div>`, () => {
+    const v = Number(document.getElementById('idc-val').value||0), t = document.getElementById('idc-type').value;
+    if (v < 0) { toast('Invalid discount','error'); return false; }
+    if (t === 'pct' && v > 100) { toast('Max 100%','error'); return false; }
+    if (t === 'amt' && v > lp) { toast('Discount is more than the price','error'); return false; }
+    applyCartDiscount(it, t, v); renderCart();
+  }, 'Apply');
+  idcPreview(i);
+}
+function idcPreview(i) {
+  const it = cart[i], el = document.getElementById('idc-prev'); if (!it || !el) return;
+  const lp = it.list_price !== undefined ? it.list_price : it.price;
+  const r = discNet(lp, document.getElementById('idc-type').value, document.getElementById('idc-val').value);
+  el.innerHTML = r.disc > 0 ? `New price: <span class="success">${fmt(r.net)}</span>${it.qty>1?` · line total <span class="success">${fmt(r.net*it.qty)}</span>`:''} <span class="muted small">(−${fmt(r.disc)}${it.qty>1?' each':''})</span>` : '';
+}
+
 /* ═══════════════════════════════════════════════════════════════
    PRICE BATCHES (accessories) — same item can hold stock bought at
    different cost / sale prices. a.qty / a.cost_price / a.sale_price are
@@ -1508,20 +1549,22 @@ function showQtyPopup(o) {
     ? `<div style="display:grid;gap:8px;margin-bottom:12px">${opts.map((x,i) => `<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--separator);border-radius:var(--radius-md);background:var(--glass-hover);cursor:pointer"><input type="radio" name="qp-opt" value="${esc(String(x.key))}" ${i===0?'checked':''}><div style="flex:1;min-width:0"><div class="strong" style="font-size:15px">${esc(x.label)}</div>${x.sub?`<div class="muted small">${esc(x.sub)}</div>`:''}</div><div class="muted small">${x.avail} available</div></label>`).join('')}</div>`
     : `<div class="muted small" style="margin-bottom:6px">${esc(opts[0].label)}${opts[0].sub?' · '+esc(opts[0].sub):''} · <b>${opts[0].avail}</b> available</div>`;
   qtyPopupOpenedAt = Date.now(); window.__refocusSales = true;
-  openModal(o.title || 'Add to cart', `<div class="form-grid"><div class="strong" style="font-size:14px">${esc(o.name)}</div>${optsHTML}${field('How many to add?', '<input id="qp-qty" class="ios-input" type="number" inputmode="numeric" min="1" step="1" value="1" style="font-size:22px;font-weight:700;text-align:center">')}<div class="muted small center kh">Press <b>Enter</b> to add</div></div>`, () => {
+  openModal(o.title || 'Add to cart', `<div class="form-grid"><div class="strong" style="font-size:14px">${esc(o.name)}</div>${optsHTML}${field('How many to add?', '<input id="qp-qty" class="ios-input" type="number" inputmode="numeric" min="1" step="1" value="1" style="font-size:22px;font-weight:700;text-align:center">')}<div style="display:grid;grid-template-columns:110px 1fr;gap:10px">${field('Discount (optional)', '<select id="qp-dtype" class="ios-input"><option value="amt">Rs off</option><option value="pct">% off</option></select>')}${field('\u00a0', '<input id="qp-disc" class="ios-input" type="number" step="0.01" min="0" placeholder="0">')}</div><div class="muted small center kh">Press <b>Enter</b> to add</div></div>`, () => {
     const sel = multi ? document.querySelector('input[name="qp-opt"]:checked') : null;
     const key = multi ? sel.value : String(opts[0].key);
     const opt = opts.find(x => String(x.key) === key);
     const qty = Math.floor(Number(document.getElementById('qp-qty').value));
     if (!qty || qty < 1) { toast('Enter quantity','error'); return false; }
     if (qty > opt.avail) { toast(`Only ${opt.avail} available`,'warn',3000); return false; }
-    o.onConfirm(opt.key, qty);
+    const dv = Number(document.getElementById('qp-disc')?.value||0), dt = document.getElementById('qp-dtype')?.value || 'amt';
+    if (dv < 0 || (dt === 'pct' && dv > 100)) { toast('Invalid discount','error'); return false; }
+    o.onConfirm(opt.key, qty, dv > 0 ? { type:dt, val:dv } : null);
   }, '➕ Add to Cart');
   setTimeout(() => {
     const q = document.getElementById('qp-qty'); if (!q) return;
     q.focus(); q.select();
     const h = e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); window.__noEnterUntil = Date.now() + 500; if (e.repeat || Date.now() - qtyPopupOpenedAt < 450) return; document.getElementById('modal-ok')?.click(); } };
-    q.addEventListener('keydown', h);
+    q.addEventListener('keydown', h); document.getElementById('qp-disc')?.addEventListener('keydown', h);
     document.querySelectorAll('input[name="qp-opt"]').forEach(r => r.addEventListener('keydown', h));
   }, 70);
 }
@@ -1535,7 +1578,7 @@ function promptAccessoryAdd(accId) {
   const a = DB.accessories.find(x => x.id === accId); if (!a) return;
   const o = accSaleOptions(a);
   if (!o.length) { toast(`${a.name}: no more stock`,'warn',3000); return; }
-  showQtyPopup({ title:'Add to cart', name:a.name, options:o.map(x => ({ key:x.batch_id, label:`${fmtInt(x.price)} each`, sub: canSeeCost() ? `cost ${fmtInt(x.cost)}` : '', avail:x.avail })), onConfirm:(key, qty) => addAccessoryToCart(a.id, key, qty) });
+  showQtyPopup({ title:'Add to cart', name:a.name, options:o.map(x => ({ key:x.batch_id, label:`${fmtInt(x.price)} each`, sub: canSeeCost() ? `cost ${fmtInt(x.cost)}` : '', avail:x.avail })), onConfirm:(key, qty, disc) => addAccessoryToCart(a.id, key, qty, disc) });
 }
 function promptPhoneProductAdd(pid) {
   const p = DB.products.find(x => x.id === pid); if (!p) return;
@@ -1544,9 +1587,9 @@ function promptPhoneProductAdd(pid) {
   const g = {};
   free.forEach(u => { const k = (Number(u.sale_price)||0) + '|' + (Number(u.cost_price)||0); (g[k] = g[k] || { price:Number(u.sale_price)||0, cost:Number(u.cost_price)||0, units:[] }).units.push(u); });
   const opts = Object.entries(g).map(([k,v]) => ({ key:k, label:`${fmtInt(v.price)} each`, sub: canSeeCost() ? `cost ${fmtInt(v.cost)}` : '', avail:v.units.length }));
-  showQtyPopup({ title:'Add phones to cart', name:[p.brand,p.model,p.storage,p.color].filter(Boolean).join(' '), options:opts, onConfirm:(k, qty) => { g[k].units.slice().sort((a,b) => a.id - b.id).slice(0, qty).forEach(u => addPhoneToCart(u.id)); } });
+  showQtyPopup({ title:'Add phones to cart', name:[p.brand,p.model,p.storage,p.color].filter(Boolean).join(' '), options:opts, onConfirm:(k, qty, disc) => { g[k].units.slice().sort((a,b) => a.id - b.id).slice(0, qty).forEach(u => { addPhoneToCart(u.id); if (disc) applyCartDiscount(cart.find(c => c.type === 'phone' && c.unit_id === u.id), disc.type, disc.val); }); if (disc) renderCart(); } });
 }
-function addAccessoryToCart(accId, batchId, qty) {
+function addAccessoryToCart(accId, batchId, qty, disc) {
   const a = DB.accessories.find(x => x.id === accId); if (!a) return false;
   qty = Math.max(1, Math.floor(Number(qty)||1));
   const opts = accSaleOptions(a);
@@ -1558,6 +1601,7 @@ function addAccessoryToCart(accId, batchId, qty) {
   const ex = cart.find(c => c.type === 'accessory' && c.accessory_id === accId && c.batch_id === batchId);
   if (ex) ex.qty += qty;
   else cart.push({ type:'accessory', accessory_id:a.id, batch_id:batchId, code:a.code||'', barcode:a.barcode||'', desc:a.name, price:b.price, qty, cost:b.cost, warranty_months: Number(a.warranty_months) || 0 });
+  if (disc) applyCartDiscount(ex || cart[cart.length-1], disc.type, disc.val);
   renderCart(); const inp = document.getElementById('sales-search-input'); if (inp) salesSearch(inp.value);
   return true;
 }
@@ -1651,11 +1695,12 @@ function buildInvoiceMessage(sale) {
     if (it.item_code && !isReload && !isManual) msg += ` _[${it.item_code}]_`;
     if (it.barcode) msg += ` _[🏷️${it.barcode}]_`;
     msg += `\n   Qty ${it.qty} × ${fmt(it.price)} = *${fmt(it.qty * it.price)}*\n`;
+    if (it.item_disc > 0) msg += `   🏷️ Discount: -${fmt(it.item_disc * it.qty)} (was ${fmt(it.list_price)} each)\n`;
     const w = warrantyText(it.warranty_months); if (w) msg += `   🛡️ Warranty: _${w}_\n`;
   });
   msg += `\n${L}\n*PAYMENT SUMMARY*\n\nSubtotal:    ${fmt(sale.subtotal)}\n`;
   if (sale.discount) msg += `Discount:   -${fmt(sale.discount)}\n`;
-  msg += `*TOTAL:       ${fmt(sale.total)}*\nPaid (${sale.payment_method}): ${fmt(sale.paid_amount)}\n`;
+  msg += `*TOTAL:       ${fmt(sale.total)}*\nPaid (${sale.payment_method}): ${fmt(saleGiven(sale))}\n`;
   if (sale.change > 0.01) msg += `*CHANGE:     ${fmt(sale.change)}*\n`;
   if (sale.balance > 0) { msg += `\n⚠️ *Balance Due:* ${fmt(sale.balance)}\n`; if (c && (Number(c.balance)||0) > 0) msg += `💳 *Total Owed:* ${fmt(c.balance)}\n`; }
   else msg += `\n✅ *Fully Paid*\n`;
@@ -1981,7 +2026,7 @@ document.addEventListener('keydown', e => {
 
 /* ═══ CASH MOVEMENTS ═══ */
 function getCashSummary(dateStr = today()) {
-  const salesCash = DB.sales.filter(s => (s.created_at||'').startsWith(dateStr) && (s.payment_method||'cash') === 'cash').reduce((a,s)=>a+(Number(s.paid_amount)||0),0);
+  const salesCash = DB.sales.filter(s => (s.created_at||'').startsWith(dateStr) && (s.payment_method||'cash') === 'cash').reduce((a,s)=>a+salePaid(s),0);
   const creditCash = (DB.credit_payments||[]).filter(p => (p.created_at||'').startsWith(dateStr) && (p.method||'cash') === 'cash').reduce((a,p)=>a+(Number(p.amount)||0),0);
   const cashIns = (DB.cash_transactions||[]).filter(t => (t.created_at||'').startsWith(dateStr) && t.type === 'cash_in').reduce((a,t)=>a+(Number(t.amount)||0),0);
   const cashOuts = (DB.cash_transactions||[]).filter(t => (t.created_at||'').startsWith(dateStr) && t.type === 'cash_out').reduce((a,t)=>a+(Number(t.amount)||0),0);
@@ -2603,7 +2648,7 @@ function renderCart() {
     const qc = it.type==='accessory' ? `<div class="qty-ctrl"><button onclick="cartQty(${i},-1)">−</button><span>${it.qty}</span><button onclick="cartQty(${i},1)">+</button></div>` : '';
     const rc = (isReload || isManual || it.type==='repair') ? 'item-row reload-item' : 'item-row';
     const icon = isManual ? '📦 ' : (isReload ? '💳 ' : (it.type==='repair' ? '🔧 ' : ''));
-    return `<div class="${rc}"><div class="item-info" style="flex:1"><div class="row gap" style="margin-bottom:3px;flex-wrap:wrap">${codeChip(it.code, it.type==='accessory', isReload, it.barcode)}<span class="strong" style="font-size:12px">${icon}${esc(it.desc).slice(0,60)}</span>${warrantyChip(it.warranty_months)}</div><div class="muted small">${fmtInt(it.price)}${it.type==='accessory'?' × '+it.qty:''}</div></div>${qc}<button class="ios-pill red sm" onclick="removeFromCart(${i})">✕</button></div>`;
+    return `<div class="${rc}"><div class="item-info" style="flex:1"><div class="row gap" style="margin-bottom:3px;flex-wrap:wrap">${codeChip(it.code, it.type==='accessory', isReload, it.barcode)}<span class="strong" style="font-size:12px">${icon}${esc(it.desc).slice(0,60)}</span>${warrantyChip(it.warranty_months)}</div><div class="muted small">${(it.list_price!==undefined&&it.list_price>it.price)?`<s>${fmtInt(it.list_price)}</s> `:''}${fmtInt(it.price)}${it.type==='accessory'?' × '+it.qty:''}${(it.list_price!==undefined&&it.list_price>it.price)?` <span class="success strong">${it.disc_type==='pct'?'-'+it.disc_val+'%':'-'+fmtInt(it.list_price-it.price)}</span>`:''}</div></div>${qc}${['phone','accessory','manual'].includes(it.type)?`<button class="ios-pill sm" title="Item discount" onclick="showItemDiscount(${i})">🏷️</button>`:''}<button class="ios-pill red sm" onclick="removeFromCart(${i})">✕</button></div>`;
   }).join('');
   updateTotal();
 }
@@ -2759,11 +2804,12 @@ function finalizeSale({ disc, paidFinal, total, change, balance, method, custInf
   const inv = 'INV-' + today().replace(/-/g,'') + '-' + String(DB.ids.sales).padStart(4,'0');
   const cost_total = cart.reduce((a,i)=>a+i.cost*i.qty,0);
   const st = cart.reduce((a,i)=>a+i.price*i.qty,0);
-  const sale = { id:nextId('sales'), invoice_no:inv, customer_id:cust_id, subtotal:st, discount:disc, total, cost_total, payment_method:method, paid_amount:paidFinal, change, balance, created_at:now(), user_id:currentUser?.id||null };
+  const items_discount = cart.reduce((a,i)=>a+((i.list_price ?? i.price) - i.price)*i.qty,0);
+  const sale = { id:nextId('sales'), invoice_no:inv, customer_id:cust_id, subtotal:st, discount:disc, total, cost_total, payment_method:method, paid_amount:Math.max(0, paidFinal - change), received:paidFinal, items_discount, change, balance, created_at:now(), user_id:currentUser?.id||null };
   DB.sales.push(sale);
   const repDelivered = [], repPending = [];
   cart.forEach(it => {
-    DB.sale_items.push({ repair_id: it.type==='repair' ? it.repair_id : null, id:nextId('sale_items'), sale_id:sale.id, item_type: it.type || 'phone', item_code: it.code || '', barcode: it.barcode || '', warranty_months: it.warranty_months || 0, stock_unit_id: it.type==='phone' ? it.unit_id : null, accessory_id: it.type==='accessory' ? it.accessory_id : null, batch_id: it.type==='accessory' ? (it.batch_id ?? null) : null, product_id: it.type==='phone' ? it.product_id : null, description:it.desc, price:it.price, qty:it.qty, cost:it.cost });
+    DB.sale_items.push({ repair_id: it.type==='repair' ? it.repair_id : null, id:nextId('sale_items'), sale_id:sale.id, item_type: it.type || 'phone', item_code: it.code || '', barcode: it.barcode || '', warranty_months: it.warranty_months || 0, stock_unit_id: it.type==='phone' ? it.unit_id : null, accessory_id: it.type==='accessory' ? it.accessory_id : null, batch_id: it.type==='accessory' ? (it.batch_id ?? null) : null, product_id: it.type==='phone' ? it.product_id : null, description:it.desc, price:it.price, list_price:(it.list_price ?? it.price), item_disc:((it.list_price ?? it.price) - it.price), qty:it.qty, cost:it.cost });
     if (it.type === 'phone') { const u = DB.stock_units.find(x=>x.id===it.unit_id); if (u){ u.status = 'sold'; u.sold_at = now(); } }
     else if (it.type === 'accessory') { const a = DB.accessories.find(x=>x.id===it.accessory_id); if (a){ accRemoveStock(a, it.qty, it.batch_id); } }
     if (it.type === 'repair') {
@@ -3169,7 +3215,7 @@ function showCustomerDetail(id) {
   const payments = DB.credit_payments.filter(p=>p.customer_id===id).sort((a,b)=>b.id-a.id);
   const cRets = DB.returns.filter(r => { const s = DB.sales.find(x=>x.id===r.sale_id); return s && s.customer_id === id; });
   const tp = sales.reduce((a,s)=>a+s.total,0);
-  const tpd = sales.reduce((a,s)=>a+s.paid_amount,0) + payments.reduce((a,p)=>a+p.amount,0);
+  const tpd = sales.reduce((a,s)=>a+salePaid(s),0) + payments.reduce((a,p)=>a+p.amount,0);
   const tr = cRets.reduce((a,r)=>a+r.refund_amount,0);
   openModal(`${c.name}`, `<div class="cust-header"><div class="cust-avatar-lg">${esc((c.name||'?').charAt(0).toUpperCase())}</div><div class="cust-info-lg"><div class="cust-name-lg">${esc(c.name)}</div><div class="cust-phone-lg">${esc(c.phone||'No phone')}</div>${c.id_number?`<div class="cust-phone-lg">🆔 ${esc(c.id_number)}</div>`:''}${c.address?`<div class="cust-phone-lg">🏠 ${esc(c.address)}</div>`:''}</div></div><div class="cust-balance-box ${bal > 0 ? 'owes' : 'clear'}"><div style="font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)">${bal > 0 ? '⚠️ Amount Owed' : '✓ Clear'}</div><div class="cust-balance-amt ${bal > 0 ? 'danger-c' : 'success'}">${fmtInt(bal)}</div></div><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px"><div style="padding:10px;background:var(--glass-hover);border-radius:var(--radius-md);text-align:center"><div class="muted small">Purchased</div><div class="strong">${fmtInt(tp)}</div></div><div style="padding:10px;background:var(--glass-hover);border-radius:var(--radius-md);text-align:center"><div class="muted small">Paid</div><div class="strong success">${fmtInt(tpd)}</div></div><div style="padding:10px;background:var(--glass-hover);border-radius:var(--radius-md);text-align:center"><div class="muted small">Returned</div><div class="strong danger-c">${fmtInt(tr)}</div></div></div><div class="row gap" style="flex-wrap:wrap;margin-bottom:14px">${bal > 0 ? `<button class="ios-pill orange" style="flex:1" onclick="closeModal();recordCreditPayment(${c.id})">💵 Record Payment</button>` : ''}<button class="ios-pill" style="flex:1" onclick="closeModal();editCustomer(${c.id})">✏️ Edit</button></div><div><h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:8px">Purchase History (${sales.length})</h3>${sales.length ? `<div style="max-height:220px;overflow-y:auto;background:var(--glass-hover);border-radius:var(--radius-md);padding:6px">${sales.slice(0,15).map(s=>{ const rt = getSaleReturnTotal(s.id); return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid var(--separator);cursor:pointer" onclick="closeModal();printSaleReceipt(${s.id})"><div><div class="strong small">${esc(s.invoice_no)} ${rt>0?'<span class="danger-c">↩</span>':''}</div><div class="muted small">${esc(s.created_at.slice(0,16))}</div></div><div style="text-align:right"><div class="strong">${fmtInt(s.total)}</div>${s.balance>0?`<div class="warn small">+${fmtInt(s.balance)} credit</div>`:'<div class="success small">✓ paid</div>'}</div></div>`; }).join('')}</div>` : '<p class="muted small center pad">No purchases yet</p>'}</div>${payments.length ? `<div style="margin-top:14px"><h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:8px">Credit Payments (${payments.length})</h3><div style="max-height:150px;overflow-y:auto;background:var(--glass-hover);border-radius:var(--radius-md);padding:6px">${payments.slice(0,15).map(p=>`<div style="display:flex;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--separator)"><div><div class="strong small">${esc(p.method||'cash')}${p.note?` · <span class="muted">${esc(p.note).slice(0,30)}</span>`:''}</div><div class="muted small">${esc(p.created_at.slice(0,16))}</div></div><div class="strong success">-${fmtInt(p.amount)}</div></div>`).join('')}</div></div>` : ''}`, () => {}, 'Close');
 }
@@ -3500,7 +3546,7 @@ function repOverview(f,t){
   const rpd=rbd[d]||0; if(!ss.length&&!re.length&&!rpd)return;
   const rs=re.length?reloadDaySummary(d):{hasClosing:false,profit:0,activeCount:0}, rsale=re.filter(x=>x.type==='sale').reduce((a,x)=>a+Number(x.amount||0),0);
   const sales=ss.reduce((a,s)=>a+s.total,0), cost=ss.reduce((a,s)=>a+(s.cost_total||0),0);
-  rows.push({d,n:ss.length,sales,paid:ss.reduce((a,s)=>a+(s.paid_amount||0),0),rsale,rprofit:rs.hasClosing?rs.profit:0,rpend:rs.activeCount>0&&!rs.hasClosing,profit:sales-cost-rsale+(rs.hasClosing?rs.profit:0)+rpd});
+  rows.push({d,n:ss.length,sales,paid:ss.reduce((a,s)=>a+salePaid(s),0),rsale,rprofit:rs.hasClosing?rs.profit:0,rpend:rs.activeCount>0&&!rs.hasClosing,profit:sales-cost-rsale+(rs.hasClosing?rs.profit:0)+rpd});
  });
  const k=x=>rows.reduce((a,r)=>a+r[x],0), rets=DB.returns.filter(r=>{const d=(r.created_at||'').slice(0,10);return d>=f&&d<=t;}).reduce((a,r)=>a+r.refund_amount,0);
  const rpf=DB.repairs.filter(r=>r.status==='delivered'&&(r.delivered_at||'').slice(0,10)>=f&&(r.delivered_at||'').slice(0,10)<=t).reduce((a,r)=>a+(Number(r.final_cost)||0)-(Number(r.cost)||0),0);
@@ -3546,7 +3592,7 @@ function runReport() {
   return;
  }
  if (reportTab === 'cash') {
-  const sc=DB.sales.filter(s=>inR(s.created_at)&&(s.payment_method||'cash')==='cash').reduce((a,s)=>a+(Number(s.paid_amount)||0),0);
+  const sc=DB.sales.filter(s=>inR(s.created_at)&&(s.payment_method||'cash')==='cash').reduce((a,s)=>a+salePaid(s),0);
   const cc=(DB.credit_payments||[]).filter(p=>inR(p.created_at)&&(p.method||'cash')==='cash').reduce((a,p)=>a+(Number(p.amount)||0),0);
   const rp=(DB.repair_payments||[]).filter(x=>inR(x.created_at)).reduce((a,x)=>a+(Number(x.amount)||0),0);
   const cr=(DB.returns||[]).filter(r=>inR(r.created_at)&&r.refund_method==='cash').reduce((a,r)=>a+(Number(r.refund_amount)||0),0);
@@ -3562,14 +3608,14 @@ function runReport() {
  let sales = DB.sales.filter(s => inR(s.created_at));
  if (q) sales = sales.filter(s => { const c = DB.customers.find(x=>x.id===s.customer_id); const u = DB.users.find(x=>x.id===s.user_id); if ((s.invoice_no||'').toLowerCase().includes(q) || (c?.name||'').toLowerCase().includes(q) || (c?.phone||'').toLowerCase().includes(q) || (u?.name||'').toLowerCase().includes(q)) return true; return DB.sale_items.some(it => it.sale_id===s.id && ((it.description||'').toLowerCase().includes(q) || (it.item_code||'').toLowerCase().includes(q) || (it.barcode||'').toLowerCase().includes(q))); });
  sales.sort((a,b)=>b.id-a.id);
- const total = sales.reduce((a,s)=>a+s.total,0), paid = sales.reduce((a,s)=>a+s.paid_amount,0), bal = sales.reduce((a,s)=>a+(s.balance||0),0);
- body.innerHTML = `<div class="muted small" style="margin-bottom:8px">${f} → ${t}</div><div class="stat-grid" style="margin-bottom:14px">${st('Invoices',sales.length,'primary-c')}${st('Sales Total',fmtInt(total))}${st('Received',fmtInt(paid),'success')}${st('Balance Due',fmtInt(bal),'warn')}</div>${sales.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th></th></tr></thead><tbody>${sales.slice(0,200).map(s => { const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<tr><td class="muted small">${esc(s.invoice_no)}${rt>0?' <span class="danger-c">↩</span>':''}</td><td class="muted small">${esc((s.created_at||'').slice(0,16).replace('T',' '))}</td><td>${esc(c?.name||'Walk-in')}</td><td class="strong">${fmtInt(s.total)}</td><td class="success">${fmtInt(s.paid_amount)}</td><td class="${s.balance>0?'warn':''}">${fmtInt(s.balance)}</td><td style="white-space:nowrap"><button class="ios-pill sm" onclick="openBillFromSearch(${s.id})">👁 View</button> <button class="ios-pill red sm" onclick="showReturnModal(${s.id})">↩️</button></td></tr>`; }).join('')}</tbody></table></div>${sales.length>200?'<p class="muted center small" style="margin-top:8px">Showing latest 200 — narrow the period or search</p>':''}` : '<div class="card center pad muted">No invoices found</div>'}`;
+ const total = sales.reduce((a,s)=>a+s.total,0), paid = sales.reduce((a,s)=>a+salePaid(s),0), bal = sales.reduce((a,s)=>a+(s.balance||0),0);
+ body.innerHTML = `<div class="muted small" style="margin-bottom:8px">${f} → ${t}</div><div class="stat-grid" style="margin-bottom:14px">${st('Invoices',sales.length,'primary-c')}${st('Sales Total',fmtInt(total))}${st('Received',fmtInt(paid),'success')}${st('Balance Due',fmtInt(bal),'warn')}</div>${sales.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Total</th><th>Paid</th><th>Balance</th><th></th></tr></thead><tbody>${sales.slice(0,200).map(s => { const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<tr><td class="muted small">${esc(s.invoice_no)}${rt>0?' <span class="danger-c">↩</span>':''}</td><td class="muted small">${esc((s.created_at||'').slice(0,16).replace('T',' '))}</td><td>${esc(c?.name||'Walk-in')}</td><td class="strong">${fmtInt(s.total)}</td><td class="success">${fmtInt(salePaid(s))}</td><td class="${s.balance>0?'warn':''}">${fmtInt(s.balance)}</td><td style="white-space:nowrap"><button class="ios-pill sm" onclick="openBillFromSearch(${s.id})">👁 View</button> <button class="ios-pill red sm" onclick="showReturnModal(${s.id})">↩️</button></td></tr>`; }).join('')}</tbody></table></div>${sales.length>200?'<p class="muted center small" style="margin-top:8px">Showing latest 200 — narrow the period or search</p>':''}` : '<div class="card center pad muted">No invoices found</div>'}`;
 }
 function exportReportCSV() {
   const from = repFrom, to = repTo;
   const sales = DB.sales.filter(s => { const d = s.created_at.slice(0,10); return d >= from && d <= to; });
   const rows = [['Invoice','Date','Customer','Cashier','Total','Paid','Balance','Method','Returns']];
-  sales.forEach(s => { const c = DB.customers.find(x=>x.id===s.customer_id); const u = DB.users.find(x=>x.id===s.user_id); rows.push([s.invoice_no,s.created_at,c?.name||'Walk-in',u?.name||'-',s.total,s.paid_amount,s.balance,s.payment_method,getSaleReturnTotal(s.id)]); });
+  sales.forEach(s => { const c = DB.customers.find(x=>x.id===s.customer_id); const u = DB.users.find(x=>x.id===s.user_id); rows.push([s.invoice_no,s.created_at,c?.name||'Walk-in',u?.name||'-',s.total,salePaid(s),s.balance,s.payment_method,getSaleReturnTotal(s.id)]); });
   const csv = rows.map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download = `sales_${from}_to_${to}.csv`; a.click();
   toast('CSV exported','success');
@@ -3610,7 +3656,7 @@ function openBillFromSearch(saleId) {
   const c = DB.customers.find(x=>x.id===s.customer_id); const u = DB.users.find(x=>x.id===s.user_id);
   const items = DB.sale_items.filter(i=>i.sale_id===saleId); const rt = getSaleReturnTotal(saleId);
   const returns = DB.returns.filter(r => r.sale_id === saleId);
-  openModal(`🧾 ${s.invoice_no}`, `<div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row gap" style="flex-wrap:wrap;margin-bottom:6px"><span class="strong" style="font-size:14px">${esc(s.invoice_no)}</span>${rt>0?'<span class="danger-c small">↩ returned</span>':''}${s.balance>0?`<span class="warn small">⚠ bal ${fmtInt(s.balance)}</span>`:'<span class="success small">✓ paid</span>'}</div><div class="muted small">📅 ${esc(s.created_at)}</div>${c?`<div class="muted small">👤 ${esc(c.name)}${c.phone?' · 📞 '+esc(c.phone):''}${c.id_number?' · 🆔 '+esc(c.id_number):''}</div>`:''}${u?`<div class="muted small">💰 Served by ${esc(u.name)}</div>`:''}</div><div class="field-label" style="margin-bottom:8px">Items (${items.length})</div><div style="background:var(--glass-hover);border-radius:var(--radius-md);padding:8px;margin-bottom:14px;max-height:260px;overflow-y:auto">${items.map(it => `<div style="padding:8px 10px;border-bottom:1px solid var(--separator)"><div class="row gap" style="flex-wrap:wrap;margin-bottom:3px">${codeChip(it.item_code, it.item_type==='accessory', it.item_type==='reload'||it.item_type==='manual', it.barcode)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div>${it.warranty_months?`<div class="small">${warrantyChip(it.warranty_months)}</div>`:''}<div class="row" style="justify-content:space-between"><span class="muted small">${it.qty} × ${fmtInt(it.price)}</span><span class="strong">${fmtInt(it.qty*it.price)}</span></div></div>`).join('')}</div><div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:4px"><span>Subtotal</span><span>${fmtInt(s.subtotal)}</span></div>${s.discount?`<div class="row" style="justify-content:space-between;color:var(--orange)"><span>Discount</span><span>-${fmtInt(s.discount)}</span></div>`:''}<div class="row" style="justify-content:space-between;font-weight:800;font-size:16px;margin-top:6px;padding-top:6px;border-top:1px solid var(--separator)"><span>TOTAL</span><span>${fmtInt(s.total)}</span></div><div class="row" style="justify-content:space-between"><span>Paid (${esc(s.payment_method)})</span><span class="success">${fmtInt(s.paid_amount)}</span></div>${s.change > 0.01 ? `<div class="row" style="justify-content:space-between"><span>Change given</span><span class="success">${fmtInt(s.change)}</span></div>` : ''}${s.balance > 0.01 ? `<div class="row" style="justify-content:space-between;color:var(--orange);font-weight:700"><span>Balance due</span><span>${fmtInt(s.balance)}</span></div>` : ''}</div>${returns.length ? `<div style="margin-bottom:14px"><div class="field-label" style="margin-bottom:8px">Returns (${returns.length})</div><div style="background:rgba(255,69,58,.08);border-radius:var(--radius-md);padding:8px">${returns.map(r=>`<div style="padding:6px 8px;border-bottom:1px solid var(--separator)"><div class="strong small">${esc(r.description).slice(0,50)}</div><div class="muted small">${r.qty} × ${fmtInt(r.unit_price)} → refund ${fmtInt(r.refund_amount)} · ${r.restocked?'✅ restocked':'❌ written off'}</div></div>`).join('')}</div></div>` : ''}<div class="row gap" style="flex-wrap:wrap"><button class="ios-pill blue" style="flex:1" onclick="closeModal();printSaleReceipt(${s.id})">🖨️ Print</button><button class="ios-pill wa" style="flex:1" onclick="closeModal();promptWhatsApp(${s.id})">💬 WhatsApp</button></div>`, () => {}, 'Close');
+  openModal(`🧾 ${s.invoice_no}`, `<div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row gap" style="flex-wrap:wrap;margin-bottom:6px"><span class="strong" style="font-size:14px">${esc(s.invoice_no)}</span>${rt>0?'<span class="danger-c small">↩ returned</span>':''}${s.balance>0?`<span class="warn small">⚠ bal ${fmtInt(s.balance)}</span>`:'<span class="success small">✓ paid</span>'}</div><div class="muted small">📅 ${esc(s.created_at)}</div>${c?`<div class="muted small">👤 ${esc(c.name)}${c.phone?' · 📞 '+esc(c.phone):''}${c.id_number?' · 🆔 '+esc(c.id_number):''}</div>`:''}${u?`<div class="muted small">💰 Served by ${esc(u.name)}</div>`:''}</div><div class="field-label" style="margin-bottom:8px">Items (${items.length})</div><div style="background:var(--glass-hover);border-radius:var(--radius-md);padding:8px;margin-bottom:14px;max-height:260px;overflow-y:auto">${items.map(it => `<div style="padding:8px 10px;border-bottom:1px solid var(--separator)"><div class="row gap" style="flex-wrap:wrap;margin-bottom:3px">${codeChip(it.item_code, it.item_type==='accessory', it.item_type==='reload'||it.item_type==='manual', it.barcode)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div>${it.warranty_months?`<div class="small">${warrantyChip(it.warranty_months)}</div>`:''}<div class="row" style="justify-content:space-between"><span class="muted small">${it.qty} × ${fmtInt(it.price)}</span><span class="strong">${fmtInt(it.qty*it.price)}</span></div></div>`).join('')}</div><div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:4px"><span>Subtotal</span><span>${fmtInt(s.subtotal)}</span></div>${s.discount?`<div class="row" style="justify-content:space-between;color:var(--orange)"><span>Discount</span><span>-${fmtInt(s.discount)}</span></div>`:''}<div class="row" style="justify-content:space-between;font-weight:800;font-size:16px;margin-top:6px;padding-top:6px;border-top:1px solid var(--separator)"><span>TOTAL</span><span>${fmtInt(s.total)}</span></div><div class="row" style="justify-content:space-between"><span>Paid (${esc(s.payment_method)})</span><span class="success">${fmtInt(saleGiven(s))}</span></div>${s.change > 0.01 ? `<div class="row" style="justify-content:space-between"><span>Change given</span><span class="success">${fmtInt(s.change)}</span></div>` : ''}${s.balance > 0.01 ? `<div class="row" style="justify-content:space-between;color:var(--orange);font-weight:700"><span>Balance due</span><span>${fmtInt(s.balance)}</span></div>` : ''}</div>${returns.length ? `<div style="margin-bottom:14px"><div class="field-label" style="margin-bottom:8px">Returns (${returns.length})</div><div style="background:rgba(255,69,58,.08);border-radius:var(--radius-md);padding:8px">${returns.map(r=>`<div style="padding:6px 8px;border-bottom:1px solid var(--separator)"><div class="strong small">${esc(r.description).slice(0,50)}</div><div class="muted small">${r.qty} × ${fmtInt(r.unit_price)} → refund ${fmtInt(r.refund_amount)} · ${r.restocked?'✅ restocked':'❌ written off'}</div></div>`).join('')}</div></div>` : ''}<div class="row gap" style="flex-wrap:wrap"><button class="ios-pill blue" style="flex:1" onclick="closeModal();printSaleReceipt(${s.id})">🖨️ Print</button><button class="ios-pill wa" style="flex:1" onclick="closeModal();promptWhatsApp(${s.id})">💬 WhatsApp</button></div>`, () => {}, 'Close');
 }
 
 /* ═══ SETTINGS ═══ */
@@ -3721,7 +3767,7 @@ function printSaleReceipt(saleId) {
   const c = DB.customers.find(x=>x.id===s.customer_id); const u = DB.users.find(x=>x.id===s.user_id);
   const cfg = DB.settings; const saleReturns = DB.returns.filter(r => r.sale_id === saleId);
   applyPrintSize();
-  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_address)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="row-line"><span>Invoice:</span><span>${esc(s.invoice_no)}</span></div><div class="row-line"><span>Date:</span><span>${esc(s.created_at)}</span></div>${c ? `<div class="row-line"><span>Customer:</span><span>${esc(c.name)}</span></div>` : ''}${c && c.phone ? `<div class="row-line"><span>Phone:</span><span>${esc(c.phone)}</span></div>` : ''}${u ? `<div class="row-line"><span>Served by:</span><span>${esc(u.name)}</span></div>` : ''}<hr>${items.map(it => { const isR = it.item_type === 'reload'; const isM = it.item_type === 'manual'; const w = warrantyText(it.warranty_months); const ic = isR ? '💳 ' : (isM ? '📦 ' : ''); const ct = it.item_code || (isR ? 'Reload' : ''); const cp = ct ? `[${esc(ct)}]` : ''; return `<div>${ic}${cp}${it.barcode?' 🏷️'+esc(it.barcode):''} ${esc(it.description)}</div>${w ? `<div style="padding-left:8px">  Warranty: ${w}</div>` : ''}<div class="row-line"><span>  ${it.qty} x ${fmt(it.price)}</span><span>${fmt(it.qty*it.price)}</span></div>`; }).join('')}<hr><div class="row-line"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>${s.discount ? `<div class="row-line"><span>Discount:</span><span>-${fmt(s.discount)}</span></div>` : ''}<div class="row-line" style="font-weight:bold"><span>TOTAL:</span><span>${fmt(s.total)}</span></div><div class="row-line"><span>Paid (${esc(s.payment_method)}):</span><span>${fmt(s.paid_amount)}</span></div>${s.change > 0.01 ? `<div class="row-line"><span>Change:</span><span>${fmt(s.change)}</span></div>` : ''}${s.balance > 0 ? `<div class="row-line"><span>Balance:</span><span>${fmt(s.balance)}</span></div>` : ''}${c && c.balance > 0 ? `<div class="row-line" style="font-weight:bold"><span>Total Owed:</span><span>${fmt(c.balance)}</span></div>` : ''}${saleReturns.length ? `<hr><div class="center" style="font-weight:bold">RETURNS</div>${saleReturns.map(r => `<div>[${esc(r.item_code||'-')}] ${esc(r.description)} ${r.restocked?'✅':'❌'}</div><div class="row-line"><span>  ${r.qty} × ${fmt(r.unit_price)}</span><span>-${fmt(r.refund_amount)}</span></div>`).join('')}` : ''}<hr><div class="center">Thank you!</div><div style="height:15px"></div>`;
+  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_address)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="row-line"><span>Invoice:</span><span>${esc(s.invoice_no)}</span></div><div class="row-line"><span>Date:</span><span>${esc(s.created_at)}</span></div>${c ? `<div class="row-line"><span>Customer:</span><span>${esc(c.name)}</span></div>` : ''}${c && c.phone ? `<div class="row-line"><span>Phone:</span><span>${esc(c.phone)}</span></div>` : ''}${u ? `<div class="row-line"><span>Served by:</span><span>${esc(u.name)}</span></div>` : ''}<hr>${items.map(it => { const isR = it.item_type === 'reload'; const isM = it.item_type === 'manual'; const w = warrantyText(it.warranty_months); const ic = isR ? '💳 ' : (isM ? '📦 ' : ''); const ct = it.item_code || (isR ? 'Reload' : ''); const cp = ct ? `[${esc(ct)}]` : ''; return `<div>${ic}${cp}${it.barcode?' 🏷️'+esc(it.barcode):''} ${esc(it.description)}</div>${w ? `<div style="padding-left:8px">  Warranty: ${w}</div>` : ''}<div class="row-line"><span>  ${it.qty} x ${fmt(it.price)}${it.item_disc>0?' (-'+fmt(it.item_disc)+')':''}</span><span>${fmt(it.qty*it.price)}</span></div>`; }).join('')}<hr><div class="row-line"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>${s.discount ? `<div class="row-line"><span>Discount:</span><span>-${fmt(s.discount)}</span></div>` : ''}<div class="row-line" style="font-weight:bold"><span>TOTAL:</span><span>${fmt(s.total)}</span></div><div class="row-line"><span>Paid (${esc(s.payment_method)}):</span><span>${fmt(saleGiven(s))}</span></div>${s.change > 0.01 ? `<div class="row-line"><span>Change:</span><span>${fmt(s.change)}</span></div>` : ''}${s.balance > 0 ? `<div class="row-line"><span>Balance:</span><span>${fmt(s.balance)}</span></div>` : ''}${c && c.balance > 0 ? `<div class="row-line" style="font-weight:bold"><span>Total Owed:</span><span>${fmt(c.balance)}</span></div>` : ''}${saleReturns.length ? `<hr><div class="center" style="font-weight:bold">RETURNS</div>${saleReturns.map(r => `<div>[${esc(r.item_code||'-')}] ${esc(r.description)} ${r.restocked?'✅':'❌'}</div><div class="row-line"><span>  ${r.qty} × ${fmt(r.unit_price)}</span><span>-${fmt(r.refund_amount)}</span></div>`).join('')}` : ''}<hr><div class="center">Thank you!</div><div style="height:15px"></div>`;
   setTimeout(()=>window.print(),120);
 }
 function printRepairReceipt(repairId) {
