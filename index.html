@@ -47,6 +47,10 @@ input,select,textarea{font-family:inherit;color:inherit}
 .nav a:hover{background:var(--glass-hover);color:var(--text)}
 .nav a.active{background:var(--blue);color:#fff;font-weight:600;box-shadow:0 4px 14px rgba(10,132,255,.4)}
 .nav a .nav-icon{font-size:15px;width:20px;text-align:center}
+.kbd{display:inline-block;font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:3px 6px;border-radius:5px;border:1px solid var(--glass-border);background:var(--glass-hover);color:var(--text-2);vertical-align:middle;margin-left:4px;white-space:nowrap}
+.nav a .nav-kbd{margin-left:auto;font:600 10px/1 ui-monospace,Menlo,Consolas,monospace;opacity:.6}
+.nav a.active .nav-kbd{opacity:.85}
+@media (hover:none),(max-width:768px){.kbd,.nav-kbd,.kh{display:none !important}}
 .sidebar-foot{border-top:1px solid var(--separator);padding-top:10px;margin-top:8px}
 .user-card{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:var(--radius-md);background:var(--glass-hover);margin-bottom:7px}
 .avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;flex-shrink:0;box-shadow:0 4px 12px rgba(10,132,255,.35);overflow:hidden}
@@ -524,6 +528,7 @@ body.sidebar-hidden .content{padding-left:54px}
       <p class="sub muted" id="login-selected-user">Enter password</p>
       <input id="login-user" type="hidden">
       <input id="login-pass" class="ios-input" type="password" placeholder="Password" autocomplete="current-password">
+      <label class="small muted" style="display:flex;align-items:center;gap:8px;margin:10px 0 0 4px;cursor:pointer;text-align:left"><input type="checkbox" id="login-remember" style="width:auto"> Remember me on this device</label>
       <div id="login-error" class="hidden small danger-c" style="margin-top:6px;text-align:left;padding-left:4px"></div>
       <button class="ios-pill blue full" onclick="doLogin()">Sign In</button>
       <button class="ios-pill ghost full" style="margin-top:8px" onclick="backToUserList()">← Back</button>
@@ -557,6 +562,7 @@ body.sidebar-hidden .content{padding-left:54px}
         </div>
       </div>
       <button class="switch-btn" onclick="showSwitchAccount()">🔄 <span>Switch Account</span></button>
+      <button class="ios-btn" onclick="showShortcutsHelp()">⌨️ <span>Shortcuts</span> <span class="kbd">F1</span></button>
       <button class="ios-btn" onclick="toggleTheme()">🌗 <span>Theme</span></button>
       <button class="ios-btn danger" onclick="doLogout()">🚪 <span>Logout</span></button>
     </div>
@@ -607,7 +613,7 @@ const LS_SAFE_KEY = 'phone_shop_pos_safety_backup';
 const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token';
 const LS_DIRTY_KEY = 'pos_has_unsaved';
 const LS_LAST_SYNC_KEY = 'pos_last_sync_ts';
-const POS_VERSION = 'v4.6';
+const POS_VERSION = 'v4.5';
 
 /* Collections that sync to Firebase */
 const SYNC_COLLECTIONS = ['products','stock_units','accessories','customers','sales','sale_items','repairs','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items','cash_transactions','users','staff','salary_payments','expenses','cash_closings','audit_logs','reload_entries','repair_payments'];
@@ -1502,7 +1508,7 @@ function showQtyPopup(o) {
     ? `<div style="display:grid;gap:8px;margin-bottom:12px">${opts.map((x,i) => `<label style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--separator);border-radius:var(--radius-md);background:var(--glass-hover);cursor:pointer"><input type="radio" name="qp-opt" value="${esc(String(x.key))}" ${i===0?'checked':''}><div style="flex:1;min-width:0"><div class="strong" style="font-size:15px">${esc(x.label)}</div>${x.sub?`<div class="muted small">${esc(x.sub)}</div>`:''}</div><div class="muted small">${x.avail} available</div></label>`).join('')}</div>`
     : `<div class="muted small" style="margin-bottom:6px">${esc(opts[0].label)}${opts[0].sub?' · '+esc(opts[0].sub):''} · <b>${opts[0].avail}</b> available</div>`;
   qtyPopupOpenedAt = Date.now(); window.__refocusSales = true;
-  openModal(o.title || 'Add to cart', `<div class="form-grid"><div class="strong" style="font-size:14px">${esc(o.name)}</div>${optsHTML}${field('How many to add?', '<input id="qp-qty" class="ios-input" type="number" inputmode="numeric" min="1" step="1" value="1" style="font-size:22px;font-weight:700;text-align:center">')}<div class="muted small center">Press <b>Enter</b> to add</div></div>`, () => {
+  openModal(o.title || 'Add to cart', `<div class="form-grid"><div class="strong" style="font-size:14px">${esc(o.name)}</div>${optsHTML}${field('How many to add?', '<input id="qp-qty" class="ios-input" type="number" inputmode="numeric" min="1" step="1" value="1" style="font-size:22px;font-weight:700;text-align:center">')}<div class="muted small center kh">Press <b>Enter</b> to add</div></div>`, () => {
     const sel = multi ? document.querySelector('input[name="qp-opt"]:checked') : null;
     const key = multi ? sel.value : String(opts[0].key);
     const opt = opts.find(x => String(x.key) === key);
@@ -1740,17 +1746,30 @@ function doLogin() {
   const user = DB.users.find(x => x.username.toLowerCase() === u);
   if (!user || user.password !== hashPassword(p)) { err.textContent = 'Invalid password'; err.classList.remove('hidden'); return; }
   if (!user.active) { err.textContent = 'Account disabled'; err.classList.remove('hidden'); return; }
+  completeLogin(user, !!document.getElementById('login-remember')?.checked);
+}
+function completeLogin(user, remember) {
   currentUser = user; sessionStorage.setItem('pos_user_id', user.id);
+  try { if (remember === true) localStorage.setItem('pos_remember', JSON.stringify({ uid: user.id, ph: user.password })); else if (remember === false) localStorage.removeItem('pos_remember'); } catch(e) {}
   document.getElementById('loading-screen').classList.add('hidden');
   document.getElementById('firebase-auth-screen').classList.add('hidden');
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app-layout').classList.remove('hidden');
   document.getElementById('login-pass').value = '';
+  const rc = document.getElementById('login-remember'); if (rc) rc.checked = false;
   updateUserBox(); buildNav(); buildMobileTabs();
   currentView = firstAllowedView(); render();
   toast(`Welcome, ${user.name}!`, 'success');
 }
-async function doLogout() { if (!confirm('Sign out of POS and Firebase?')) return; currentUser = null; sessionStorage.removeItem('pos_user_id'); document.getElementById('app-layout').classList.add('hidden'); document.getElementById('login-screen').classList.add('hidden'); document.getElementById('loading-screen').classList.remove('hidden'); document.getElementById('loading-screen').innerHTML = '<div class="spinner"></div><div>Signing out securely…</div>'; try { await fbAuth.signOut(); } catch(e) { console.error('Firebase sign out failed', e); showFirebaseAuth(); } }
+function tryRememberedLogin() {
+  try {
+    const r = JSON.parse(localStorage.getItem('pos_remember') || 'null'); if (!r) return false;
+    const u = DB.users.find(x => x.id === r.uid);
+    if (!u || !u.active || u.password !== r.ph) { localStorage.removeItem('pos_remember'); return false; }
+    completeLogin(u, null); return true;
+  } catch(e) { return false; }
+}
+async function doLogout() { if (!confirm('Sign out of POS and Firebase?')) return; try { localStorage.removeItem('pos_remember'); } catch(e) {} currentUser = null; sessionStorage.removeItem('pos_user_id'); document.getElementById('app-layout').classList.add('hidden'); document.getElementById('login-screen').classList.add('hidden'); document.getElementById('loading-screen').classList.remove('hidden'); document.getElementById('loading-screen').innerHTML = '<div class="spinner"></div><div>Signing out securely…</div>'; try { await fbAuth.signOut(); } catch(e) { console.error('Firebase sign out failed', e); showFirebaseAuth(); } }
 function showSwitchAccount() { closeMobileSidebar(); const users = DB.users.filter(u => u.active); const rows = users.map(u => { const isMe = currentUser && u.id === currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:100%;height:100%;object-fit:cover">` : esc((u.name||u.username).charAt(0).toUpperCase()); return `<div class="user-select-row ${isMe?'current':''}" ${isMe?'':`onclick="promptSwitchTo(${u.id})"`}><div class="user-select-avatar">${av}</div><div class="user-select-info"><div class="strong" style="font-size:13px">${esc(u.name)}</div><div class="muted small">@${esc(u.username)} · ${esc(u.role)}${isMe?' · <span class="success">current</span>':''}</div></div>${isMe ? '<span class="badge badge-done">Active</span>' : '<button class="ios-pill blue sm">Switch</button>'}</div>`; }).join(''); openModal('Switch Account', `<div class="form-grid" style="gap:8px">${rows}</div>`, () => {}, 'Close'); }
 function promptSwitchTo(userId) { const u = DB.users.find(x=>x.id===userId); if (!u) return; openModal(`Switch to ${u.name}`, `<div class="form-grid">${field('Password', `<input id="switch-pass" class="ios-input" type="password" placeholder="Password">`, true)}</div>`, () => { const pass = document.getElementById('switch-pass').value; if (hashPassword(pass) !== u.password) { toast('Wrong password','error'); return false; } currentUser = u; sessionStorage.setItem('pos_user_id', u.id); updateUserBox(); buildNav(); buildMobileTabs(); currentView = firstAllowedView(); render(); toast(`Switched to ${u.name}`,'success'); }, 'Switch'); }
 function updateUserBox() { if (!currentUser) return; document.getElementById('user-name-display').textContent = currentUser.name; document.getElementById('user-role-display').textContent = currentUser.role; const av = document.getElementById('user-avatar'); if (currentUser.photo) av.innerHTML = `<img src="${currentUser.photo}" alt="">`; else av.textContent = (currentUser.name || currentUser.username).charAt(0).toUpperCase(); }
@@ -1805,7 +1824,7 @@ function importJSON() {
 /* ═══ VIEWS ═══ */
 const views = { dashboard:renderDashboard, sales:renderSales, reload:renderReload,  phonestock:renderPhoneStock, stock:renderStock, repairs:renderRepairs, shoprepair:renderShopRepair, customers:renderCustomers, orders:renderOrders, suppliers:renderSuppliers, staff:renderStaff, expenses:renderExpenses, cashclosing:renderCashClosing, reports:renderReports, billsearch:renderBillSearch, settings:renderSettings };
 let currentView = 'dashboard';
-function buildNav() { const nav = document.getElementById('nav'); const perms = ROLE_PERMS[currentUser.role]||[]; nav.innerHTML = perms.map(k => { const m = VIEW_META[k]; return `<a data-view="${k}" class="${k===currentView?'active':''}"><span class="nav-icon">${m.icon}</span><span>${m.label}</span></a>`; }).join(''); }
+function buildNav() { const nav = document.getElementById('nav'); const perms = ROLE_PERMS[currentUser.role]||[]; nav.innerHTML = perms.map((k,i) => { const m = VIEW_META[k]; return `<a data-view="${k}" title="${i<9?'Alt+'+(i+1):''}" class="${k===currentView?'active':''}"><span class="nav-icon">${m.icon}</span><span>${m.label}</span>${i<9?`<span class="nav-kbd">Alt+${i+1}</span>`:''}</a>`; }).join(''); }
 function buildMobileTabs() {
   const tabs = document.getElementById('mobile-tabs'); if (!tabs) return;
   const perms = ROLE_PERMS[currentUser.role]||[];
@@ -1916,6 +1935,48 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') { e.preventDefault(); completeSale(); }
+});
+
+/* ═══ KEYBOARD SHORTCUTS ═══ */
+const SHORTCUTS = [
+  ['F1','Show this shortcut list'],
+  ['F2','Go to Sale and focus the scan / search box'],
+  ['F3','Focus the search box on this page'],
+  ['F4  or  Ctrl+Enter','Complete sale (open payment)'],
+  ['F6','Sale: switch Phones / Accessories'],
+  ['Alt+D','Sale: jump to Discount'],
+  ['Alt+C','Sale: clear cart'],
+  ['Alt+1 … Alt+9','Open menu item 1 – 9 (hover the menu to see numbers)'],
+  ['Esc','Close the open popup'],
+  ['Payment popup: Alt+1 … Alt+5','Cash / Credit / Card / Bank / QR'],
+  ['Payment popup: Enter','Next step / complete (after change shown)'],
+  ['After a sale: P  /  W  /  Enter','Print bill / WhatsApp bill / close']
+];
+function showShortcutsHelp() {
+  openModal('⌨️ Keyboard shortcuts', `<div style="overflow-x:auto"><table class="ios-table"><tbody>${SHORTCUTS.map(([k,d]) => `<tr><td style="white-space:nowrap"><b class="primary-c">${esc(k)}</b></td><td class="muted small">${esc(d)}</td></tr>`).join('')}</tbody></table></div>`, () => {}, 'Close');
+}
+document.addEventListener('keydown', e => {
+  if (!currentUser) return;
+  const root = document.getElementById('modal-root'), modalOpen = !!(root && root.children.length);
+  const k = e.key;
+  if (k === 'Escape') {
+    if (modalOpen && !root.querySelector('.modal-bg-danger') && !document.getElementById('scan-video')) { e.preventDefault(); closeModal(); }
+    return;
+  }
+  if (payState && document.getElementById('pay-inner') && e.altKey && /^Digit[1-5]$/.test(e.code)) { e.preventDefault(); payMethod(PAY_METHODS[Number(e.code.slice(5)) - 1][0]); return; }
+  if (k === 'F1') { e.preventDefault(); if (!modalOpen) showShortcutsHelp(); return; }
+  if (modalOpen) return;
+  const focusEl = el => { if (el) { el.focus(); try { el.select && el.select(); } catch(_) {} } };
+  if (k === 'F2') { e.preventDefault(); if (currentView !== 'sales') navigateTo('sales'); setTimeout(() => focusEl(document.getElementById('sales-search-input')), 60); return; }
+  if (k === 'F3') { e.preventDefault(); focusEl(document.querySelector('#sales-search-input, #pstock-search, #acc-search, #rep-search, .ios-search input')); return; }
+  if (currentView === 'sales' && (k === 'F4' || (k === 'Enter' && e.ctrlKey))) { e.preventDefault(); completeSale(); return; }
+  if (currentView === 'sales' && k === 'F6') { e.preventDefault(); const bs = [...document.querySelectorAll('#sales-seg button')]; if (bs.length) { const i = bs.findIndex(b => b.classList.contains('active')); bs[(i + 1) % bs.length].click(); focusEl(document.getElementById('sales-search-input')); } return; }
+  if (currentView === 'sales' && e.altKey && e.code === 'KeyD') { e.preventDefault(); focusEl(document.getElementById('discount')); return; }
+  if (currentView === 'sales' && e.altKey && e.code === 'KeyC') { e.preventDefault(); if (cart.length && confirm('Clear the cart?')) clearCart(); return; }
+  if (e.altKey && /^Digit[1-9]$/.test(e.code)) {
+    const perms = ROLE_PERMS[currentUser.role] || [], v = perms[Number(e.code.slice(5)) - 1];
+    if (v) { e.preventDefault(); navigateTo(v); }
+  }
 });
 
 /* ═══ CASH MOVEMENTS ═══ */
@@ -2289,6 +2350,7 @@ function renderSales(root) {
             <div class="segmented" id="sales-seg" style="margin-bottom:10px;width:100%">
               <button class="${salesTab==='phones'?'active':''}" onclick="salesSetTab('phones',this)" style="flex:1">📱 Phones</button>
               <button class="${salesTab==='accessories'?'active':''}" onclick="salesSetTab('accessories',this)" style="flex:1">📦 Accessories</button>
+              <span class="kbd" style="align-self:center;margin:0 6px" title="Switch Phones / Accessories">F6</span>
             </div>
             <div style="display:flex;gap:8px;align-items:center"><div class="ios-search" style="max-width:none;flex:1"><input id="sales-search-input" placeholder="Type to search..." oninput="salesSearch(this.value)" autocomplete="off"><button class="clear" onclick="salesClearSearch()">✕</button></div><button type="button" class="ios-pill blue cam-btn" onclick="openScanner('sales-search-input','salesSearch')">📷</button></div>
           </div>
@@ -2302,7 +2364,7 @@ function renderSales(root) {
             <div id="credit-extra-fields"></div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
               <div style="display:none">${field('Payment', `<select id="payment" class="ios-input" style="padding:8px 10px"><option value="cash">💵 Cash</option><option value="card">💳 Card</option><option value="bank">🏦 Bank</option><option value="qr">📱 QR</option></select>`)}</div>
-              ${field('Discount', '<input id="discount" class="ios-input" placeholder="0" value="0" type="number" step="0.01" oninput="updateTotal()" style="padding:8px 10px">')}
+              ${field('Discount', '<input id="discount" class="ios-input" placeholder="0" value="0" type="number" step="0.01" oninput="updateTotal()" style="padding:8px 10px">', false, '<span class="kbd" style="margin:0">Alt+D</span>')}
               <div style="display:none">${field('Paid', '<input id="paid" class="ios-input" placeholder="blank=exact" type="number" step="0.01" style="padding:8px 10px" oninput="updateChangeDisplay();updateCreditPreview()">')}</div>
             </div>
             <div id="credit-preview" class="small" style="margin-top:6px;display:none"></div>
@@ -2314,7 +2376,7 @@ function renderSales(root) {
           <div class="cart-footer">
             <div class="total-box"><div class="muted small" style="font-weight:700;letter-spacing:.06em">TOTAL</div><div class="total-val" id="total">0.00</div></div>
             <div class="change-box" id="change-box"><div class="change-label">💰 Change</div><div class="change-val" id="change-val">0</div></div>
-            <div class="row gap" style="margin-top:10px"><button class="ios-pill ghost" style="flex:1" onclick="clearCart()">Clear</button><button class="ios-pill green" style="flex:2" onclick="completeSale()" id="complete-btn">✓ Complete Sale</button></div>
+            <div class="row gap" style="margin-top:10px"><button class="ios-pill ghost" style="flex:1" onclick="clearCart()">Clear <span class="kbd">Alt+C</span></button><button class="ios-pill green" style="flex:2" onclick="completeSale()" id="complete-btn">✓ Complete Sale <span class="kbd" style="color:#fff;border-color:rgba(255,255,255,.5);background:rgba(255,255,255,.18)">F4</span></button></div>
           </div>
         </div>
       </div>
@@ -2495,7 +2557,7 @@ function updateChangeDisplay() {
   if (paid > total && total > 0) { val.textContent = fmtInt(paid - total); box.classList.add('show'); }
   else box.classList.remove('show');
 }
-function updateSalesSearchPlaceholder() { const inp = document.getElementById('sales-search-input'); if (!inp) return; inp.placeholder = salesTab === 'phones' ? '🔍 IMEI / code / brand / model / color...' : '🔍 Name / code / category / barcode...'; }
+function updateSalesSearchPlaceholder() { const inp = document.getElementById('sales-search-input'); if (!inp) return; inp.placeholder = (salesTab === 'phones' ? '🔍 IMEI / code / brand / model / color...' : '🔍 Name / code / category / barcode...') + (window.matchMedia('(hover:hover) and (min-width:769px)').matches ? '  [F2]' : ''); }
 function salesSetTab(t, btn) { salesTab = t; document.querySelectorAll('#sales-seg button').forEach(b => b.classList.remove('active')); if (btn) btn.classList.add('active'); updateSalesSearchPlaceholder(); const inp = document.getElementById('sales-search-input'); salesSearch(inp ? inp.value : ''); }
 function salesClearSearch() { const inp = document.getElementById('sales-search-input'); if (inp) inp.value = ''; salesSearchQ = ''; document.getElementById('search-results').innerHTML = '<p class="muted center pad small">Start typing to search items...</p>'; if (inp) inp.focus(); }
 function salesSearch(v) {
@@ -2582,11 +2644,11 @@ function renderPayPopup() {
   const g = id => document.getElementById(id);
   let inner = '', focusId = '';
   const top = `<div class="center" style="margin-bottom:12px"><div class="muted small" style="font-weight:700;letter-spacing:.06em">TOTAL</div><div style="font-size:34px;font-weight:800">${payMoney(s.total)}</div></div>`;
-  const tabs = `<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:14px">${PAY_METHODS.map(([k,l]) => `<button type="button" class="ios-pill ${s.method===k?'blue':'ghost'} sm" onclick="payMethod('${k}')">${l}</button>`).join('')}</div>`;
+  const tabs = `<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-bottom:14px">${PAY_METHODS.map(([k,l],i) => `<button type="button" title="Alt+${i+1}" class="ios-pill ${s.method===k?'blue':'ghost'} sm" onclick="payMethod('${k}')">${l} <span class="kbd">Alt+${i+1}</span></button>`).join('')}</div>`;
   const cancelBtn = '<button type="button" class="ios-pill ghost" onclick="closeModal()">Cancel</button>';
   if (s.step === 'change') {
     const ch = s.received - s.total;
-    inner = `<div class="center muted small" style="margin-bottom:6px">Customer gave <b>${payMoney(s.received)}</b> · Total <b>${payMoney(s.total)}</b></div><div class="sale-change-hero"><div class="label">💰 Give change</div><div class="val">${payMoney(ch)}</div></div><div class="center muted small" style="margin:10px 0">Press <b>Enter</b> to complete, print bill &amp; send WhatsApp</div><div class="row gap" style="justify-content:flex-end"><button type="button" class="ios-pill ghost" onclick="payBack()">← Back</button><button type="button" class="ios-pill green" id="pay-done" style="flex:1" onclick="payFinalize()">✓ Complete Sale</button></div>`;
+    inner = `<div class="center muted small" style="margin-bottom:6px">Customer gave <b>${payMoney(s.received)}</b> · Total <b>${payMoney(s.total)}</b></div><div class="sale-change-hero"><div class="label">💰 Give change</div><div class="val">${payMoney(ch)}</div></div><div class="center muted small kh" style="margin:10px 0">Press <b>Enter</b> to complete the sale</div><div class="row gap" style="justify-content:flex-end"><button type="button" class="ios-pill ghost" onclick="payBack()">← Back</button><button type="button" class="ios-pill green" id="pay-done" style="flex:1" onclick="payFinalize()">✓ Complete Sale</button></div>`;
     focusId = 'pay-done';
   } else if (s.method === 'cash') {
     inner = top + tabs + `<div class="form-field"><label class="field-label">Customer gave</label><input id="pay-recv" class="ios-input" type="number" step="0.01" inputmode="decimal" placeholder="${payMoney(s.total)} (exact)" style="font-size:24px;font-weight:700;text-align:center" onkeydown="payKey(event)" oninput="payRecvLive()"></div><div id="pay-live" class="center small" style="min-height:22px;margin-top:6px"></div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin:8px 0 14px">${payQuick(s.total).map(v => `<button type="button" class="ios-pill sm" onclick="payQuickSet(${v})">${v===s.total?'Exact':''} ${payMoney(v)}</button>`).join('')}</div><div class="row gap" style="justify-content:flex-end">${cancelBtn}<button type="button" class="ios-pill green" onclick="payToChange()">Next ⏎</button></div>`;
@@ -2600,7 +2662,7 @@ function renderPayPopup() {
     focusId = !nm ? 'pay-cc-name' : (!pp ? 'pay-cc-phone' : (!idn ? 'pay-cc-idnum' : (!ad ? 'pay-cc-address' : 'pay-cc-paid')));
   } else {
     const lbl = PAY_METHODS.find(m => m[0] === s.method)[1];
-    inner = top + tabs + `<div class="center" style="margin:6px 0 16px">Customer pays <b>${payMoney(s.total)}</b> by <b>${lbl}</b></div><div class="center muted small" style="margin-bottom:10px">Press <b>Enter</b> to complete</div><div class="row gap" style="justify-content:flex-end">${cancelBtn}<button type="button" class="ios-pill green" id="pay-done" style="flex:1" onclick="payFinalize()">✓ Complete Sale</button></div>`;
+    inner = top + tabs + `<div class="center" style="margin:6px 0 16px">Customer pays <b>${payMoney(s.total)}</b> by <b>${lbl}</b></div><div class="center muted small kh" style="margin-bottom:10px">Press <b>Enter</b> to complete</div><div class="row gap" style="justify-content:flex-end">${cancelBtn}<button type="button" class="ios-pill green" id="pay-done" style="flex:1" onclick="payFinalize()">✓ Complete Sale</button></div>`;
     focusId = 'pay-done';
   }
   const root = document.getElementById('modal-root');
@@ -2663,12 +2725,24 @@ function payFinalize() {
   closeModal(); payState = null;
   finalizeSale({ disc, paidFinal, total, change, balance, method, custInfo, auto:true });
 }
+let postOpenedAt = 0;
 function postSaleActions(saleId) {
   const s = DB.sales.find(x => x.id === saleId); if (!s) return;
   const c = DB.customers.find(x => x.id === s.customer_id);
-  toast(`✅ ${s.invoice_no} — ${fmtInt(s.total)}${Number(s.change)>0.01?' · change '+fmtInt(s.change):''}`, 'success', 4000);
-  if (c && c.phone) { try { window.open(`https://wa.me/${formatPhoneForWA(c.phone)}?text=${encodeURIComponent(buildInvoiceMessage(s))}`, 'wa_bill', 'popup,width=520,height=720'); } catch(e) {} }
-  printSaleReceipt(saleId);
+  const ch = Number(s.change)||0;
+  postOpenedAt = Date.now(); window.__refocusSales = true; window.__noEnterUntil = Date.now() + 500;
+  document.getElementById('modal-root').innerHTML = `<div class="modal-bg" onclick="if(event.target===this) closeModal()"><div class="modal" style="max-width:400px" onkeydown="postKey(event,${saleId})"><div class="center"><div style="font-size:40px">✅</div><h2 style="margin:4px 0">Sale complete</h2><div class="muted small">${esc(s.invoice_no)} · <b>${fmtInt(s.total)}</b>${ch>0.01?` · change <b>${fmtInt(ch)}</b>`:''}${c?.name?` · ${esc(c.name)}`:''}</div></div><div style="display:grid;gap:10px;margin:18px 0 12px"><button type="button" class="ios-pill blue" style="padding:14px" onclick="printSaleReceipt(${saleId})">🖨️ Print Bill <span class="muted small kh">(P)</span></button><button type="button" class="ios-pill green" style="padding:14px" onclick="promptWhatsApp(${saleId})">💬 WhatsApp Bill <span class="muted small kh">(W)</span></button></div><button type="button" class="ios-pill ghost" id="post-done" style="width:100%" onclick="closeModal()">Done<span class="kh"> — press Enter to close</span></button></div></div>`;
+  setTimeout(() => document.getElementById('post-done')?.focus(), 30);
+}
+function postKey(e, saleId) {
+  if (e.key === 'Enter' || e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation(); window.__noEnterUntil = Date.now() + 400;
+    if (e.repeat || Date.now() - postOpenedAt < 400) return;
+    closeModal(); return;
+  }
+  const k = (e.key||'').toLowerCase();
+  if (k === 'p') { e.preventDefault(); printSaleReceipt(saleId); }
+  else if (k === 'w') { e.preventDefault(); promptWhatsApp(saleId); }
 }
 
 function finalizeSale({ disc, paidFinal, total, change, balance, method, custInfo, auto }) {
@@ -3704,7 +3778,7 @@ async function startPosAfterFirebaseAuth(firebaseUser) {
     document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
     rebuildOrderHistory();
     /* Require the local POS staff login after Firebase authentication on every fresh app boot. */
-    sessionStorage.removeItem('pos_user_id'); currentUser = null; showLogin();
+    sessionStorage.removeItem('pos_user_id'); currentUser = null; if (!tryRememberedLogin()) showLogin();
     fbInitDone = true;
     startRealtimeSync(); startResetListener();
     const vc = document.getElementById('version-chip'); if (vc) vc.textContent = POS_VERSION;
